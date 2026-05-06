@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Delta Irrigation ROI Analyzer</title>
+
+  <!-- React & ReactDOM via CDN -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+
+  <!-- Babel standalone for in-browser JSX transpilation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #070f05; color: #C8D8A0; font-family: Georgia, serif; }
+    select option { background: #080f06; color: #B8C8A0; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-thumb { background: #1a3020; border-radius: 3px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Loading screen */
+    #loading { position:fixed; inset:0; background:#070f05; display:flex; align-items:center; justify-content:center; z-index:999; }
+    #loading.hidden { display:none; }
+  </style>
+</head>
+<body>
+
+  <div id="loading">
+    <div style="text-align:center; color:#4a6040; font-family:monospace; font-size:12px; letter-spacing:2px;">
+      <div style="width:24px;height:24px;border:2px solid #1a3020;border-top-color:#6a9060;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px;"></div>
+      LOADING...
+    </div>
+  </div>
+
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react" data-plugins="">
+    const { useState } = React;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // EDITABLE CONFIGURATION
+    // To change the Anthropic model, update the string below.
+    // Current options: claude-haiku-4-5-20251001  |  claude-sonnet-4-6
+    const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+    // ─────────────────────────────────────────────────────────────────────────
+
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const REGIONS = [
+  { value: "ms_north",   label: "MS Delta — Northern (Bolivar, Coahoma, Quitman)" },
+  { value: "ms_central", label: "MS Delta — Central (Sunflower, Leflore, Humphreys)" },
+  { value: "ms_south",   label: "MS Delta — Southern (Issaquena, Sharkey, Warren)" },
+  { value: "ar_ne",      label: "AR Delta — Northeast (Mississippi, Crittenden, Poinsett)" },
+  { value: "ar_central", label: "AR Delta — Central (Arkansas, Monroe, Phillips)" },
+  { value: "ar_se",      label: "AR Delta — Southeast (Desha, Chicot, Drew)" },
+  { value: "ar_prairie", label: "AR Grand Prairie (Stuttgart / Hazen area)" },
+  { value: "loess",      label: "MS/AR Loess Hills transition zone" },
+];
+
+const SOILS = [
+  { value: "sharkey",       label: "Sharkey Clay — heavy clay, poor drainage, high swell/shrink" },
+  { value: "tunica",        label: "Tunica Clay — very heavy, slow permeability, flood-prone" },
+  { value: "dundee",        label: "Dundee Silt Loam — moderate drainage, Class II, productive" },
+  { value: "forestdale",    label: "Forestdale Clay — poorly drained, high organic matter" },
+  { value: "calloway",      label: "Calloway Silt Loam — fragipan layer, moderate productivity" },
+  { value: "crevasse",      label: "Crevasse Fine Sand — excessively drained, lower productivity" },
+  { value: "robinsonville", label: "Robinsonville Fine Sandy Loam — well-drained, good irrigated potential" },
+  { value: "bosket",        label: "Bosket Fine Sandy Loam — well-drained, productive with irrigation" },
+  { value: "dubbs",         label: "Dubbs Silt Loam — good drainage, highly productive" },
+  { value: "dexter",        label: "Dexter Sandy Loam — AR Grand Prairie, rice/soybean ground" },
+  { value: "mixed",         label: "Mixed Alluvial / Multiple soil types" },
+];
+
+const CURRENT_WATER = [
+  { value: "dryland", label: "Dryland (no irrigation)" },
+  { value: "furrow",  label: "Furrow / Flood irrigated" },
+  { value: "pivot",   label: "Center Pivot irrigated" },
+];
+
+const PROPOSED_WATER = [
+  { value: "furrow", label: "Furrow / Flood (land leveling)" },
+  { value: "pivot",  label: "Center Pivot (sprinkler system)" },
+];
+
+// Furrow expense line items
+const FURROW_ITEMS = [
+  { key: "landForming",   label: "Land Forming / Laser Leveling", ph: "e.g. 85000" },
+  { key: "well",          label: "Well (drilling & casing)", ph: "e.g. 35000" },
+  { key: "surgeTank",     label: "Surge Tank", ph: "e.g. 4500" },
+  { key: "flowMeter",     label: "Flow Meter", ph: "e.g. 1800" },
+  { key: "undergroundPipe", label: "Underground Pipe", ph: "e.g. 12000" },
+  { key: "risers",        label: "Risers & Outlets", ph: "e.g. 6000" },
+  { key: "powerUnit",     label: "Power Unit (propane/diesel engine or electric pump)", ph: "e.g. 18000" },
+  { key: "electrical",    label: "Electrical / Panel / Wiring (if applicable)", ph: "e.g. 8000" },
+  { key: "otherFurrow",   label: "Other", ph: "e.g. 0" },
+];
+
+// Pivot expense line items
+const PIVOT_ITEMS = [
+  { key: "pivotSystem",   label: "Sprinkler / Center Pivot System", ph: "e.g. 95000" },
+  { key: "well",          label: "Well (drilling & casing)", ph: "e.g. 35000" },
+  { key: "powerUnit",     label: "Engine / Power Unit (diesel or propane)", ph: "e.g. 22000" },
+  { key: "electricPanel", label: "Electric Service & Panel (if electric)", ph: "e.g. 15000" },
+  { key: "vfd",           label: "VFD / Soft-Start & Controls", ph: "e.g. 5000" },
+  { key: "underground",   label: "Underground Supply Pipe", ph: "e.g. 8000" },
+  { key: "otherPivot",    label: "Other", ph: "e.g. 0" },
+];
+
+const BLANK_FURROW = Object.fromEntries(FURROW_ITEMS.map(i => [i.key, ""]));
+const BLANK_PIVOT  = Object.fromEntries(PIVOT_ITEMS.map(i => [i.key, ""]));
+
+const BLANK = {
+  acreage: "", region: "", soil: "", currentWater: "", proposedWater: "",
+  landValue: "", notes: "",
+  financed: "no", financedAmt: "", financeRate: "",
+  ...BLANK_FURROW, ...BLANK_PIVOT,
+};
+
+// ── Styles ───────────────────────────────────────────────────────────────────
+
+const dark = "#070f05";
+const card = "#0c1809";
+const border = "#1a3018";
+const gold = "#C8C070";
+const green = "#7BC67E";
+const muted = "#4a6040";
+const mono = "monospace";
+const serif = "Georgia, 'Times New Roman', serif";
+
+const S = {
+  input: { width: "100%", background: "#07100a", border: "1px solid #1e3020", borderRadius: 6, padding: "8px 11px", color: "#E8D5A0", fontFamily: mono, fontSize: 13, boxSizing: "border-box" },
+  label: { display: "block", color: "#6a8060", fontSize: 10, fontFamily: mono, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 },
+  sectionHead: { fontSize: 9, fontFamily: mono, letterSpacing: 2, textTransform: "uppercase", color: muted, marginBottom: 8, borderBottom: "1px solid #1a2a18", paddingBottom: 4, marginTop: 2 },
+  tag: (active, col) => ({ padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 11, fontFamily: serif, background: active ? col + "28" : "transparent", border: `1px solid ${active ? col : "#18281a"}`, color: active ? "#D8C890" : "#3a5030" }),
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function numVal(s) { return parseFloat(String(s).replace(/,/g, "")) || 0; }
+
+function sumItems(form, items) {
+  return items.reduce((t, i) => t + numVal(form[i.key]), 0);
+}
+
+function fmt(n) { return Math.round(n).toLocaleString(); }
+
+function extractNum(val) {
+  if (!val) return "—";
+  const s = String(val);
+  const m = s.match(/\d+(?:[,.]\d+)?(?:\s*[-–]\s*\d+(?:[,.]\d+)?)?/);
+  if (!m) return s.slice(0, 12);
+  const after = s.slice(m.index + m[0].length).match(/^\s*(%|yrs?)?/);
+  return m[0] + (after && after[1] ? after[1] : "");
+}
+
+// ── Sub-components ───────────────────────────────────────────────────────────
+
+function Field({ label, value, onChange, ph, note }) {
+  return (
+    <div>
+      <label style={S.label}>{label}</label>
+      <input type="text" inputMode="numeric" value={value} placeholder={ph || ""}
+        onChange={e => onChange(e.target.value)} style={S.input} />
+      {note && <div style={{ fontSize: 9, color: "#3a5030", fontFamily: mono, marginTop: 3 }}>{note}</div>}
+    </div>
+  );
+}
+
+function SelectField({ label, value, onChange, options, placeholder }) {
+  return (
+    <div>
+      <label style={S.label}>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)}
+        style={{ ...S.input, appearance: "none", cursor: "pointer" }}>
+        <option value="">{placeholder || "— Select —"}</option>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function ExpenseTable({ items, form, onChange, total }) {
+  return (
+    <div style={{ background: "#080f07", border: "1px solid #182816", borderRadius: 8, overflow: "hidden", marginBottom: 4 }}>
+      {items.map((item, i) => (
+        <div key={item.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: i < items.length - 1 ? "1px solid #101a0f" : "none", background: i % 2 === 0 ? "#08100a" : "#070e06" }}>
+          <div style={{ flex: 1, fontSize: 12, color: "#7a9870", fontFamily: mono }}>{item.label}</div>
+          <div style={{ flexShrink: 0, width: 130 }}>
+            <input type="text" inputMode="numeric" value={form[item.key]} placeholder={item.ph}
+              onChange={e => onChange(item.key, e.target.value)}
+              style={{ ...S.input, padding: "5px 9px", fontSize: 12, textAlign: "right" }} />
+          </div>
+        </div>
+      ))}
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: "#0d1a0b", borderTop: "2px solid #2a4028" }}>
+        <span style={{ fontSize: 11, color: muted, fontFamily: mono, textTransform: "uppercase", letterSpacing: 1 }}>Total Improvement Cost</span>
+        <span style={{ fontSize: 16, color: gold, fontFamily: serif, fontWeight: 700 }}>${fmt(total)}</span>
+      </div>
+    </div>
+  );
+}
+
+function StatBox({ label, value, color, full }) {
+  const short = extractNum(value);
+  return (
+    <div style={{ minWidth: 80 }}>
+      <div style={{ fontSize: 9, color: muted, fontFamily: mono, textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color || "#E8D5A0", fontFamily: serif, lineHeight: 1 }}>{short}</div>
+      {full && <div style={{ fontSize: 10, color: "#4a6040", fontFamily: mono, marginTop: 4, lineHeight: 1.4 }}>{full}</div>}
+    </div>
+  );
+}
+
+function ResultCard({ item, compareSlot, onRemove, onTag }) {
+  const [open, setOpen] = useState(false);
+  const a = item.analysis;
+  const f = item.form;
+  const region = REGIONS.find(r => r.value === f.region);
+  const soil = SOILS.find(s => s.value === f.soil);
+  const cw = CURRENT_WATER.find(w => w.value === f.currentWater);
+  const pw = PROPOSED_WATER.find(w => w.value === f.proposedWater);
+  const isFurrow = f.proposedWater === "furrow";
+  const color = isFurrow ? "#8B6914" : "#2D6A8F";
+  const label = isFurrow ? "💧 Furrow / Flood" : "🔄 Center Pivot";
+
+  return (
+    <div style={{ background: card, border: `1px solid ${color}33`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: "16px 18px", marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 6 }}>
+            {compareSlot && (
+              <span style={{ fontSize: 9, padding: "2px 8px", borderRadius: 3, fontFamily: mono, letterSpacing: 1.5, background: compareSlot === "current" ? "#3a2a0820" : "#0a2a1820", color: compareSlot === "current" ? "#C8A84B" : green, border: `1px solid ${compareSlot === "current" ? "#8B691440" : "#3a805040"}` }}>
+                {compareSlot === "current" ? "◈ CURRENT" : "◉ PROPOSED"}
+              </span>
+            )}
+            <span style={{ fontFamily: serif, fontSize: 14, color: "#D8C890", fontWeight: 600 }}>{label}</span>
+          </div>
+          <div style={{ fontSize: 10, color: "#3a5030", fontFamily: mono, marginBottom: 10, lineHeight: 1.8 }}>
+            {region && region.label.split("—")[0].trim()}
+            {soil && " · " + soil.label.split("—")[0].trim()}
+            {cw && " · " + cw.label}
+            {pw && pw.value !== f.currentWater && <span style={{ color: "#4a7050" }}> → {pw.label}</span>}
+            {f.acreage && " · " + f.acreage + " ac"}
+            {f.financed === "yes" && f.financedAmt && f.financeRate && (
+              <span style={{ color: "#804030" }}> · ${fmt(numVal(f.financedAmt))} financed @ {f.financeRate}% = ${fmt(numVal(f.financedAmt) * numVal(f.financeRate) / 100)}/yr</span>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+            {a.roi_5yr && <StatBox label="5-Yr ROI" value={a.roi_5yr} full={a.roi_5yr} color={green} />}
+            {a.roi_10yr && <StatBox label="10-Yr ROI" value={a.roi_10yr} full={a.roi_10yr} color={green} />}
+            {a.land_value_increase_pct && <StatBox label="Land Value ↑" value={a.land_value_increase_pct} full={a.land_value_increase_pct} color={gold} />}
+            {a.payback_years && <StatBox label="Payback" value={a.payback_years} full={a.payback_years} color="#80A8C0" />}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, alignItems: "flex-end", flexShrink: 0 }}>
+          <button type="button" onClick={onRemove} style={{ background: "none", border: "none", color: "#2a3a28", cursor: "pointer", fontSize: 18, lineHeight: 1 }}>×</button>
+          {["current", "proposed"].map(slot => (
+            <button type="button" key={slot} onClick={() => onTag(slot)} style={{ fontSize: 9, padding: "3px 8px", borderRadius: 3, cursor: "pointer", fontFamily: mono, letterSpacing: 1, background: compareSlot === slot ? (slot === "current" ? "#3a2a0818" : "#0a2a1818") : "transparent", border: `1px solid ${compareSlot === slot ? (slot === "current" ? "#8B6914" : "#3a8050") : "#1a2a18"}`, color: compareSlot === slot ? (slot === "current" ? "#C8A84B" : green) : "#2a3a28" }}>
+              {slot === "current" ? "◈ Current" : "◉ Proposed"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <button type="button" onClick={() => setOpen(x => !x)} style={{ background: "none", border: "none", color: "#2a4028", cursor: "pointer", fontFamily: mono, fontSize: 9, marginTop: 10, letterSpacing: 1.5, textTransform: "uppercase", padding: 0 }}>
+        {open ? "▲ hide" : "▼ full analysis"}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 12, borderTop: "1px solid #1a2a18", paddingTop: 12 }}>
+          {a.summary && <p style={{ color: "#A8C090", fontSize: 13, lineHeight: 1.75, marginBottom: 12, fontFamily: serif, fontStyle: "italic" }}>{a.summary}</p>}
+          {[
+            ["Annual Revenue / Value Gain", a.annual_revenue_estimate],
+            ["Financing Impact", a.financing_impact],
+            ["Delta Market Benchmarks", a.market_benchmarks],
+            ["Key Risks", a.risks],
+          ].map(([lbl, val]) => val ? (
+            <div key={lbl} style={{ marginBottom: 8 }}>
+              <span style={{ color: lbl.includes("Risk") || lbl.includes("Financ") ? "#804040" : "#3a6040", fontSize: 9, fontFamily: mono, textTransform: "uppercase", letterSpacing: 1 }}>{lbl}: </span>
+              <span style={{ color: "#A8C090", fontSize: 13 }}>{val}</span>
+            </div>
+          ) : null)}
+          {a.recommendation && (
+            <div style={{ background: "#0a1408", border: "1px solid #1a3018", borderRadius: 6, padding: "10px 14px", marginTop: 10 }}>
+              <div style={{ fontSize: 9, color: "#3a7040", fontFamily: mono, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>Recommendation</div>
+              <div style={{ color: "#A8C090", fontSize: 13, fontFamily: serif, lineHeight: 1.65 }}>{a.recommendation}</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ComparePanel({ cur, pro }) {
+  const nv = s => parseFloat((s || "").replace(/[^0-9.\-]/g, "")) || 0;
+  const rows = [
+    { label: "5-Yr ROI",       c: cur.roi_5yr,                p: pro.roi_5yr,                hib: true },
+    { label: "10-Yr ROI",      c: cur.roi_10yr,               p: pro.roi_10yr,               hib: true },
+    { label: "Land Value ↑",   c: cur.land_value_increase_pct, p: pro.land_value_increase_pct, hib: true },
+    { label: "Payback",        c: cur.payback_years,          p: pro.payback_years,          hib: false },
+    { label: "Annual Rev/Gain", c: cur.annual_revenue_estimate, p: pro.annual_revenue_estimate, hib: true },
+    { label: "Financing Impact", c: cur.financing_impact,     p: pro.financing_impact,       hib: false },
+  ];
+  return (
+    <div style={{ background: "#0b1a0f", border: "1px solid #2a4030", borderRadius: 10, padding: "18px 22px", marginBottom: 20 }}>
+      <div style={{ fontFamily: serif, color: "#C8A84B", fontSize: 15, fontWeight: 700, marginBottom: 14 }}>⚖️ Current vs. Proposed Comparison</div>
+      <div style={{ borderRadius: 7, overflow: "hidden", border: "1px solid #1e3020" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr" }}>
+          {["Metric", "◈ Current", "◉ Proposed"].map((h, i) => (
+            <div key={h} style={{ background: ["#0c1a10","#14120a","#0a1510"][i], padding: "7px 12px", fontFamily: mono, fontSize: 9, color: ["#3a5030","#7a6030","#3a7050"][i], textTransform: "uppercase", letterSpacing: 1.5, borderBottom: "1px solid #1a2a18" }}>{h}</div>
+          ))}
+        </div>
+        {rows.map((row, i) => {
+          const cv = extractNum(row.c || "—"), pv = extractNum(row.p || "—");
+          const proWins = row.c && row.p && (row.hib ? nv(row.p) > nv(row.c) : nv(row.p) < nv(row.c) && nv(row.p) > 0);
+          const bg = i % 2 === 0;
+          return (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr" }}>
+              <div style={{ background: bg ? "#0a0f0a" : "#080c08", padding: "8px 12px", fontFamily: mono, fontSize: 11, color: "#4a6050", borderBottom: "1px solid #0f1a10" }}>{row.label}</div>
+              <div style={{ background: bg ? "#0e0c07" : "#0b0a05", padding: "8px 12px", fontSize: 13, color: "#A09060", fontFamily: serif, textAlign: "center", borderBottom: "1px solid #0f1a10" }}>{cv}</div>
+              <div style={{ background: bg ? "#090e09" : "#070c07", padding: "8px 12px", fontSize: 13, fontFamily: serif, textAlign: "center", borderBottom: "1px solid #0f1a10", color: proWins ? green : "#8aaa80" }}>{pv}{proWins ? " ↑" : ""}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
+        {[[cur, "◈ Current", "#7a6030", "#110f07", "#2a2010"], [pro, "◉ Proposed", "#3a7040", "#091209", "#1a3018"]].map(([data, lbl, tc, bg, bc]) => data?.recommendation ? (
+          <div key={lbl} style={{ background: bg, border: `1px solid ${bc}`, borderRadius: 6, padding: "10px 12px" }}>
+            <div style={{ fontSize: 9, color: tc, fontFamily: mono, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>{lbl}</div>
+            <div style={{ fontSize: 12, color: "#9A8860", fontFamily: serif, lineHeight: 1.6 }}>{data.recommendation}</div>
+          </div>
+        ) : null)}
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+
+function App() {
+  const [form, setForm] = useState(BLANK);
+  const [scenarios, setScenarios] = useState([]);
+  const [slots, setSlots] = useState({ current: null, proposed: null });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  function set(field, val) { setForm(f => ({ ...f, [field]: val })); }
+
+  const isFurrow = form.proposedWater === "furrow";
+  const isPivot  = form.proposedWater === "pivot";
+  const items    = isFurrow ? FURROW_ITEMS : isPivot ? PIVOT_ITEMS : [];
+  const totalCost = sumItems(form, items);
+
+  const annualInterest = form.financed === "yes" && form.financedAmt && form.financeRate
+    ? Math.round(numVal(form.financedAmt) * numVal(form.financeRate) / 100) : null;
+
+  function tag(id, slot) {
+    setSlots(s => {
+      const n = { ...s };
+      if (n.current === id) n.current = null;
+      if (n.proposed === id) n.proposed = null;
+      if (s[slot] === id) return n;
+      n[slot] = id;
+      return n;
+    });
+  }
+
+  async function run() {
+    setError("");
+    if (!form.proposedWater) { setError("Select a Post-Improvement irrigation type."); return; }
+    if (totalCost === 0) { setError("Enter at least one expense item to calculate total cost."); return; }
+
+    setLoading(true);
+    try {
+      const region  = REGIONS.find(r => r.value === form.region);
+      const soil    = SOILS.find(s => s.value === form.soil);
+      const cw      = CURRENT_WATER.find(w => w.value === form.currentWater);
+      const pw      = PROPOSED_WATER.find(w => w.value === form.proposedWater);
+
+      const expenseLines = items
+        .filter(i => numVal(form[i.key]) > 0)
+        .map(i => "  " + i.label + ": $" + fmt(numVal(form[i.key])))
+        .join("\n");
+
+      const financeInfo = form.financed === "yes" && form.financedAmt && form.financeRate
+        ? "Financed: $" + fmt(numVal(form.financedAmt)) + " at " + form.financeRate + "% = $" + fmt(annualInterest) + "/yr interest"
+        : "No financing (cash purchase)";
+
+      const prompt =
+        "You are a Delta irrigation investment analyst. Respond with ONLY a raw JSON object. " +
+        "No markdown, no code fences, no text outside the JSON. Start with { end with }.\n\n" +
+        "Keys (keep each value under 25 words): roi_5yr, roi_10yr, land_value_increase_pct, " +
+        "payback_years, annual_revenue_estimate, financing_impact, market_benchmarks, risks, summary, recommendation.\n\n" +
+        "SCENARIO:\n" +
+        "Irrigation Improvement: " + (pw ? pw.label : "n/a") + "\n" +
+        "Current Status: " + (cw ? cw.label : "n/a") + "\n" +
+        "Acreage: " + (form.acreage || "not specified") + "\n" +
+        "Region: " + (region ? region.label : "not specified") + "\n" +
+        "Soil: " + (soil ? soil.label : "not specified") + "\n" +
+        "Land Value: " + (form.landValue ? "$" + form.landValue + "/acre" : "not specified") + "\n" +
+        "Expense Breakdown:\n" + expenseLines + "\n" +
+        "Total Improvement Cost: $" + fmt(totalCost) + "\n" +
+        "Financing: " + financeInfo + "\n" +
+        "Notes: " + (form.notes || "none") + "\n\n" +
+        "Base analysis on Delta irrigated vs dryland premiums, MS Valley aquifer context, USDA EQIP programs, " +
+        "Delta row crop economics (cotton, soybeans, corn, rice), current commodity prices, and regional land values.\n\n" +
+        "IMPORTANT AGRONOMIC CONTEXT FOR THIS SCENARIO:\n" +
+        "1. PIVOT-TO-FURROW CONVERSION: If converting from center pivot to furrow/flood, account for corner acre recovery. " +
+        "A standard pivot irrigates roughly 78% of a square field (a circle inscribed in a square). " +
+        "Converting to furrow recaptures the corner acres — typically 20-22% of total field acreage — which were previously dryland. " +
+        "However, since the field is already irrigated, the land value premium of this conversion is modest — " +
+        "likely $150-$200/acre at most, not the full dryland-to-irrigated premium of $1,000-$2,500/acre. " +
+        "Factor corner acre recovery into yield and revenue estimates where relevant.\n" +
+        "2. WATER EFFICIENCY: Center pivot irrigation is significantly more water-efficient than furrow/flood irrigation. " +
+        "Pivots typically apply 70-85% of water to the crop vs 50-65% for furrow, reducing aquifer draw by 20-35%. " +
+        "This is not a direct cost to the user but is a meaningful environmental cost to the MS Valley alluvial aquifer, " +
+        "which is already under depletion stress in much of the Delta. Note this in your risks field when furrow is the proposed method. " +
+        "Conversely, if converting FROM furrow TO pivot, note the aquifer conservation benefit.\n" +
+        "For financing_impact: describe how the annual interest cost affects net ROI in 1-2 sentences.";
+
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: ANTHROPIC_MODEL,
+          max_tokens: 2048,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      const raw = await res.text();
+      if (!res.ok) {
+        const e = JSON.parse(raw);
+        throw new Error("API " + res.status + ": " + (e.error ? e.error.message : raw.slice(0, 120)));
+      }
+      const data = JSON.parse(raw);
+      const txt  = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+      const cleaned = txt.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/g, "").trim();
+      const s = cleaned.indexOf("{"), e2 = cleaned.lastIndexOf("}");
+      if (s === -1 || e2 === -1) throw new Error("No JSON found. Got: " + txt.slice(0, 200));
+      const parsed = JSON.parse(cleaned.slice(s, e2 + 1));
+
+      setScenarios(prev => [{
+        id: Date.now(), form: { ...form }, analysis: parsed,
+      }, ...prev]);
+      setForm(BLANK);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const curScene = scenarios.find(s => s.id === slots.current);
+  const proScene  = scenarios.find(s => s.id === slots.proposed);
+
+  return (
+    <div style={{ minHeight: "100vh", background: dark, color: "#C8D8A0", fontFamily: serif, paddingBottom: 80 }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&display=swap');
+        select option { background: #080f06; color: #B8C8A0; }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-thumb { background: #1a3020; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+
+      {/* Header */}
+      <div style={{ borderBottom: "1px solid #18281a", background: "linear-gradient(180deg,#0a1808 0%,transparent 100%)", padding: "22px 24px 16px", marginBottom: 22 }}>
+        <div style={{ maxWidth: 860, margin: "0 auto" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+            <span style={{ fontSize: 22 }}>💧</span>
+            <div>
+              <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 900, color: gold }}>Delta Irrigation ROI Analyzer</div>
+              <div style={{ fontSize: 10, color: "#2a4020", fontFamily: mono, letterSpacing: 1.5, marginTop: 3 }}>Mississippi & Arkansas Delta · Furrow & Center Pivot · 5–10 year horizon</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 860, margin: "0 auto", padding: "0 16px" }}>
+
+        {/* FORM */}
+        <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: "20px 22px", marginBottom: 22 }}>
+          <div style={{ fontFamily: mono, color: "#8aaa60", fontSize: 11, fontWeight: 700, marginBottom: 16, letterSpacing: 2, textTransform: "uppercase" }}>New Scenario</div>
+
+          {/* Irrigation type selection */}
+          <div style={S.sectionHead}>Post-Improvement Irrigation Type *</div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => set("proposedWater", "furrow")} style={S.tag(isFurrow, "#8B6914")}>💧 Furrow / Flood (Land Leveling)</button>
+            <button type="button" onClick={() => set("proposedWater", "pivot")}  style={S.tag(isPivot,  "#2D6A8F")}>🔄 Center Pivot (Sprinkler System)</button>
+          </div>
+          {form.proposedWater
+            ? <div style={{ fontSize: 11, color: "#5a8050", fontFamily: mono, marginBottom: form.currentWater === "pivot" && form.proposedWater === "furrow" ? 6 : 14, padding: "4px 10px", background: "#0a1408", border: "1px solid #1a3018", borderRadius: 5 }}>✓ {PROPOSED_WATER.find(w => w.value === form.proposedWater)?.label}</div>
+            : <div style={{ fontSize: 11, color: "#804030", fontFamily: mono, marginBottom: 14 }}>← select an improvement type above</div>
+          }
+          {form.currentWater === "pivot" && form.proposedWater === "furrow" && (
+            <div style={{ fontSize: 10, color: "#7a7030", fontFamily: mono, marginBottom: 14, padding: "7px 12px", background: "#0f0e07", border: "1px solid #2a2810", borderRadius: 5, lineHeight: 1.7 }}>
+              ⚠ Pivot → Furrow: corner acres (~20–22% of field) will become irrigated, adding yield potential.
+              Land value premium is modest (~$150–200/acre) since ground is already irrigated.
+              Note: furrow irrigation draws more from the aquifer than pivot — factor this into long-term planning.
+            </div>
+          )}
+          {form.currentWater === "furrow" && form.proposedWater === "pivot" && (
+            <div style={{ fontSize: 10, color: "#3a6050", fontFamily: mono, marginBottom: 14, padding: "7px 12px", background: "#080f0d", border: "1px solid #1a2820", borderRadius: 5, lineHeight: 1.7 }}>
+              ✦ Furrow → Pivot: pivot systems use 20–35% less water, reducing aquifer draw — a meaningful conservation benefit in the Delta.
+              Corner acres (~20–22%) will return to dryland unless supplemental irrigation is added.
+            </div>
+          )}
+          {form.currentWater === "dryland" && form.proposedWater && (
+            <div style={{ fontSize: 10, color: "#3a5040", fontFamily: mono, marginBottom: 14, padding: "7px 12px", background: "#080e0b", border: "1px solid #182818", borderRadius: 5, lineHeight: 1.7 }}>
+              ✦ Dryland → Irrigated: full dryland-to-irrigated land value premium applies (~$1,000–2,500/acre in most Delta sub-regions).
+            </div>
+          )}
+
+          {/* Land info */}
+          <div style={S.sectionHead}>Land Information</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+            <div style={{ flex: "1 1 140px" }}>
+              <label style={S.label}>Acreage</label>
+              <input type="text" inputMode="numeric" value={form.acreage} placeholder="e.g. 135" onChange={e => set("acreage", e.target.value)} style={S.input} />
+            </div>
+            <div style={{ flex: "1 1 140px" }}>
+              <label style={S.label}>Land Value ($/acre)</label>
+              <input type="text" inputMode="numeric" value={form.landValue} placeholder="e.g. 4200" onChange={e => set("landValue", e.target.value)} style={S.input} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+            <div style={{ flex: "1 1 200px" }}>
+              <SelectField label="Delta Region" value={form.region} onChange={v => set("region", v)} options={REGIONS} placeholder="— Select Region —" />
+            </div>
+            <div style={{ flex: "1 1 200px" }}>
+              <SelectField label="Primary Soil Type" value={form.soil} onChange={v => set("soil", v)} options={SOILS} placeholder="— Select Soil —" />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+            <div style={{ flex: "1 1 200px" }}>
+              <SelectField label="Current Irrigation Status" value={form.currentWater} onChange={v => set("currentWater", v)} options={CURRENT_WATER} placeholder="— Select —" />
+            </div>
+          </div>
+
+          {/* Expense inputs — shown only after type selected */}
+          {form.proposedWater && (
+            <>
+              <div style={S.sectionHead}>{isFurrow ? "Furrow / Land Leveling" : "Center Pivot"} — Expense Items</div>
+              <ExpenseTable items={items} form={form} onChange={set} total={totalCost} />
+              {totalCost > 0 && form.acreage && numVal(form.acreage) > 0 && (
+                <div style={{ fontSize: 11, color: muted, fontFamily: mono, marginBottom: 14, textAlign: "right" }}>
+                  ${fmt(totalCost / numVal(form.acreage))}/acre total
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Financing */}
+          <div style={S.sectionHead}>Improvement Financing</div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+            {[["yes","Yes — financed"],["no","No — cash purchase"]].map(([v, lbl]) => (
+              <button type="button" key={v} onClick={() => set("financed", v)} style={S.tag(form.financed === v, "#5C7A3E")}>{lbl}</button>
+            ))}
+          </div>
+          {form.financed === "yes" && (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+              <div style={{ flex: "1 1 180px" }}>
+                <label style={S.label}>Amount Financed ($)</label>
+                <input type="text" inputMode="numeric" value={form.financedAmt} placeholder="e.g. 150000" onChange={e => set("financedAmt", e.target.value)} style={S.input} />
+              </div>
+              <div style={{ flex: "0 1 140px" }}>
+                <label style={S.label}>Interest Rate (%)</label>
+                <input type="text" inputMode="decimal" value={form.financeRate} placeholder="e.g. 7.25" onChange={e => set("financeRate", e.target.value)} style={S.input} />
+              </div>
+              {annualInterest && (
+                <div style={{ flex: "0 1 170px", display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+                  <div style={{ background: "#0d0e07", border: "1px solid #2a200e", borderRadius: 6, padding: "8px 12px" }}>
+                    <div style={{ fontSize: 9, color: "#5a4020", fontFamily: mono, textTransform: "uppercase", letterSpacing: 1 }}>Annual Interest</div>
+                    <div style={{ fontSize: 17, color: "#D07060", fontFamily: "'Playfair Display', serif", fontWeight: 700 }}>${fmt(annualInterest)}/yr</div>
+                    {form.acreage && numVal(form.acreage) > 0 && <div style={{ fontSize: 9, color: "#3a3020", fontFamily: mono }}>${fmt(annualInterest / numVal(form.acreage))}/acre/yr</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Notes */}
+          <div style={{ marginBottom: 18 }}>
+            <label style={S.label}>Additional Notes / Context</label>
+            <textarea value={form.notes} rows={2}
+              placeholder="e.g. Existing well to be reused, EQIP cost-share eligible, rice history on north fields, sandy knolls on south end..."
+              onChange={e => set("notes", e.target.value)}
+              style={{ ...S.input, fontFamily: serif, resize: "vertical", lineHeight: 1.65 }} />
+          </div>
+
+          {error && (
+            <div style={{ background: "#1a0808", border: "1px solid #4a1818", borderRadius: 6, padding: "10px 14px", marginBottom: 14, fontFamily: mono, fontSize: 11, color: "#E07070", wordBreak: "break-word" }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <button type="button" onClick={run} disabled={loading} style={{ background: loading ? "#111a0f" : "linear-gradient(135deg,#2e5428,#1e3c1a)", border: "1px solid #3a6030", borderRadius: 7, padding: "10px 28px", color: loading ? "#2a3a28" : "#C0D8A0", fontFamily: "'Playfair Display', serif", fontSize: 13, fontWeight: 700, cursor: loading ? "default" : "pointer", letterSpacing: 0.5 }}>
+              {loading ? "Analyzing..." : "→ Run Analysis"}
+            </button>
+            {loading && <div style={{ width: 14, height: 14, border: "2px solid #3a6030", borderTopColor: "#A8C070", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />}
+          </div>
+        </div>
+
+        {/* COMPARISON */}
+        {curScene && proScene && <ComparePanel cur={curScene.analysis} pro={proScene.analysis} />}
+
+        {/* RESULTS */}
+        {scenarios.length > 0 && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontFamily: mono, color: "#8aaa60", fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" }}>Scenarios ({scenarios.length})</div>
+              <button type="button" onClick={() => { setScenarios([]); setSlots({ current: null, proposed: null }); }} style={{ background: "none", border: "1px solid #182018", borderRadius: 5, color: "#2a3a28", cursor: "pointer", fontFamily: mono, fontSize: 9, padding: "4px 10px", letterSpacing: 1.5, textTransform: "uppercase" }}>Clear All</button>
+            </div>
+            {!curScene && !proScene && scenarios.length >= 2 && (
+              <div style={{ fontSize: 10, color: "#2a4020", fontFamily: mono, marginBottom: 10, letterSpacing: 0.5 }}>Tag two scenarios as ◈ Current and ◉ Proposed to compare side-by-side</div>
+            )}
+            {scenarios.map(s => (
+              <ResultCard key={s.id} item={s}
+                compareSlot={slots.current === s.id ? "current" : slots.proposed === s.id ? "proposed" : null}
+                onRemove={() => { setScenarios(p => p.filter(x => x.id !== s.id)); setSlots(sl => ({ current: sl.current === s.id ? null : sl.current, proposed: sl.proposed === s.id ? null : sl.proposed })); }}
+                onTag={slot => tag(s.id, slot)}
+              />
+            ))}
+          </div>
+        )}
+
+        {scenarios.length === 0 && !loading && (
+          <div style={{ textAlign: "center", padding: "50px 24px", color: "#182818", fontFamily: "'Playfair Display', serif", fontSize: 14, border: "1px dashed #10200f", borderRadius: 10 }}>
+            Configure a scenario above to begin
+            <div style={{ fontSize: 9, fontFamily: mono, color: "#101808", marginTop: 8, letterSpacing: 1.5 }}>Furrow or Pivot · itemized costs · financing impact · compare scenarios</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+    // Mount the app
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+
+    // Hide loading screen once React has rendered
+    setTimeout(() => { const el = document.getElementById('loading'); if(el) el.classList.add('hidden'); }, 100);
+  </script>
+
+</body>
+</html>
